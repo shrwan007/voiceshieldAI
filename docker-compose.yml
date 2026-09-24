@@ -1,0 +1,92 @@
+# ==============================================================================
+# VoiceShield AI — Multi-Container Docker Compose Specification
+# ==============================================================================
+# Services:
+#   1. postgres: PostgreSQL 16 Alpine database for audio metadata, audit logs, and users.
+#   2. backend: FastAPI application with 6-stage ML pipeline (AASIST & ECAPA-TDNN).
+#   3. frontend: React 18 + Vite + Tailwind CSS dashboard with WebSocket client.
+# ==============================================================================
+
+version: '3.8'
+
+services:
+  # ----------------------------------------------------------------------------
+  # PostgreSQL Database Service
+  # ----------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: voiceshield-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: voiceshield_db
+      POSTGRES_USER: voiceshield
+      POSTGRES_PASSWORD: voiceshield_pass
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U voiceshield -d voiceshield_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - voiceshield-network
+
+  # ----------------------------------------------------------------------------
+  # Backend API & Audio ML Pipeline Service (FastAPI)
+  # ----------------------------------------------------------------------------
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: voiceshield-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://voiceshield:voiceshield_pass@postgres:5432/voiceshield_db
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./audio_storage:/app/audio_storage
+      - ./models_cache:/app/models_cache
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - voiceshield-network
+
+  # ----------------------------------------------------------------------------
+  # Frontend Dashboard Service (React + Vite)
+  # ----------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: voiceshield-frontend
+    restart: unless-stopped
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    command: npm run dev -- --host 0.0.0.0
+    networks:
+      - voiceshield-network
+
+# ------------------------------------------------------------------------------
+# Persistent Volumes
+# ------------------------------------------------------------------------------
+volumes:
+  postgres_data:
+    driver: local
+
+# ------------------------------------------------------------------------------
+# Bridge Network for Service Intercommunication
+# ------------------------------------------------------------------------------
+networks:
+  voiceshield-network:
+    driver: bridge
